@@ -14,6 +14,7 @@ services:
 
     volumes:
       - minio_data:/data
+      
 
     command: server /data --console-address ":9001"
 
@@ -96,6 +97,9 @@ services:
     volumes:
       - ../src:/app/src
       - ../data:/app/data
+      - ../logs:/app/logs
+      - ../pyproject.toml:/app/pyproject.toml
+      - ..:/app
 
     command: python -m src.part1.test_storage
 
@@ -127,6 +131,7 @@ services:
     volumes:
       - ../src:/app/src
       - ../data:/app/data
+      - ../logs:/app/logs
 
     command: python -m src.ingestion.ingest_raw
 
@@ -161,6 +166,7 @@ services:
     volumes:
       - ../src:/app/src
       - ../data:/app/data
+      - ../logs:/app/logs
 
     command: python -m src.processing.transform_curated
 
@@ -204,6 +210,7 @@ services:
     volumes:
       - ../src:/app/src
       - ../data:/app/data
+      - ../logs:/app/logs
 
     command: python -m src.loading.load_mongodb
 

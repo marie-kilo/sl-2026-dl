@@ -1,46 +1,27 @@
-"""Lit les données Raw, les nettoie avec DuckDB et écrit la zone Curated."""
-
-import logging
+"""Nettoie les données Raw avec DuckDB et produit la zone Curated."""
 
 import duckdb
 
-from src.utils.minio_client import get_s3_client
-
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(message)s"
-    ),
+from src.config.settings import (
+    CURATED_BUCKET,
+    CURATED_OBJECT,
+    RAW_BUCKET,
+    RAW_OBJECT,
+)
+from src.logger import (
+    Timer,
+    get_logger,
+)
+from src.utils.minio_client import (
+    get_s3_client,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-
-# ============================================================
-# CONFIGURATION
-# ============================================================
-
-RAW_BUCKET = "raw"
-RAW_OBJECT = "tram/tram_stops.parquet"
-
-CURATED_BUCKET = "curated"
-CURATED_OBJECT = "tram/tram_stops_clean.parquet"
 
 RAW_LOCAL_FILE = "/tmp/tram_stops_raw.parquet"
+
 CURATED_LOCAL_FILE = "/tmp/tram_stops_clean.parquet"
-
-
-# ============================================================
-# GESTION DES BUCKETS
-# ============================================================
 
 
 def ensure_bucket(
@@ -48,15 +29,10 @@ def ensure_bucket(
     bucket_name,
 ):
     """Crée le bucket s'il n'existe pas."""
-    buckets = [
-        bucket["Name"]
-        for bucket in s3_client.list_buckets()["Buckets"]
-    ]
+    buckets = [bucket["Name"] for bucket in (s3_client.list_buckets()["Buckets"])]
 
     if bucket_name not in buckets:
-        s3_client.create_bucket(
-            Bucket=bucket_name
-        )
+        s3_client.create_bucket(Bucket=bucket_name)
 
         logger.info(
             "Bucket créé : %s",
@@ -70,18 +46,11 @@ def ensure_bucket(
         )
 
 
-# ============================================================
-# LECTURE RAW
-# ============================================================
-
-
 def download_raw_file(
     s3_client,
 ):
     """Télécharge le fichier Raw depuis MinIO."""
-    logger.info(
-        "Lecture du fichier Raw depuis MinIO."
-    )
+    logger.info("Lecture du fichier Raw depuis MinIO.")
 
     s3_client.download_file(
         RAW_BUCKET,
@@ -95,51 +64,26 @@ def download_raw_file(
     )
 
 
-# ============================================================
-# TRANSFORMATION DUCKDB
-# ============================================================
-
-
 def transform_with_duckdb():
     """Nettoie le fichier Raw avec DuckDB."""
-    logger.info(
-        "Début de la transformation DuckDB."
-    )
+    logger.info("Début de la transformation DuckDB.")
 
     connection = duckdb.connect()
 
     try:
-        # ====================================================
-        # NOMBRE DE LIGNES AVANT NETTOYAGE
-        # ====================================================
-
         raw_count = connection.execute(
             f"""
-            SELECT COUNT(*)
-            FROM read_parquet('{RAW_LOCAL_FILE}')
-            """
+                SELECT COUNT(*)
+                FROM read_parquet(
+                    '{RAW_LOCAL_FILE}'
+                )
+                """
         ).fetchone()[0]
 
         logger.info(
             "Nombre de lignes Raw : %s",
             raw_count,
         )
-
-        # ====================================================
-        # NETTOYAGE
-        # ====================================================
-        #
-        # Les traitements appliqués sont :
-        # - suppression des doublons avec DISTINCT ;
-        # - suppression des route_id NULL ;
-        # - suppression des stop_id NULL ;
-        # - suppression des stop_name NULL ;
-        # - contrôle des latitudes ;
-        # - contrôle des longitudes.
-        #
-        # Le résultat est écrit dans un nouveau fichier
-        # Parquet local avant son envoi dans MinIO Curated.
-        # ====================================================
 
         connection.execute(
             f"""
@@ -151,7 +95,9 @@ def transform_with_duckdb():
                     stop_name,
                     stop_lat,
                     stop_lon
-                FROM read_parquet('{RAW_LOCAL_FILE}')
+                FROM read_parquet(
+                    '{RAW_LOCAL_FILE}'
+                )
                 WHERE route_id IS NOT NULL
                   AND stop_id IS NOT NULL
                   AND stop_name IS NOT NULL
@@ -159,19 +105,19 @@ def transform_with_duckdb():
                   AND stop_lon BETWEEN -180 AND 180
             )
             TO '{CURATED_LOCAL_FILE}'
-            (FORMAT PARQUET)
+            (
+                FORMAT PARQUET
+            )
             """
         )
 
-        # ====================================================
-        # NOMBRE DE LIGNES APRÈS NETTOYAGE
-        # ====================================================
-
         curated_count = connection.execute(
             f"""
-            SELECT COUNT(*)
-            FROM read_parquet('{CURATED_LOCAL_FILE}')
-            """
+                SELECT COUNT(*)
+                FROM read_parquet(
+                    '{CURATED_LOCAL_FILE}'
+                )
+                """
         ).fetchone()[0]
 
         logger.info(
@@ -181,24 +127,20 @@ def transform_with_duckdb():
 
         logger.info(
             "Nombre de lignes supprimées : %s",
-            raw_count - curated_count,
+            (raw_count - curated_count),
         )
-
-        # ====================================================
-        # CONTRÔLE DES DONNÉES CURATED
-        # ====================================================
 
         rows = connection.execute(
             f"""
-            SELECT *
-            FROM read_parquet('{CURATED_LOCAL_FILE}')
-            LIMIT 5
-            """
+                SELECT *
+                FROM read_parquet(
+                    '{CURATED_LOCAL_FILE}'
+                )
+                LIMIT 5
+                """
         ).fetchall()
 
-        logger.info(
-            "5 premières lignes Curated :"
-        )
+        logger.info("5 premières lignes Curated :")
 
         for row in rows:
             logger.info(
@@ -209,27 +151,14 @@ def transform_with_duckdb():
     finally:
         connection.close()
 
-        logger.info(
-            "Connexion DuckDB fermée."
-        )
-
-    logger.info(
-        "Transformation DuckDB terminée."
-    )
-
-
-# ============================================================
-# ÉCRITURE CURATED
-# ============================================================
+        logger.info("Connexion DuckDB fermée.")
 
 
 def upload_curated_file(
     s3_client,
 ):
     """Envoie le fichier nettoyé dans MinIO Curated."""
-    logger.info(
-        "Début de l'écriture dans MinIO Curated."
-    )
+    logger.info("Début de l'écriture dans MinIO Curated.")
 
     ensure_bucket(
         s3_client,
@@ -248,7 +177,6 @@ def upload_curated_file(
         CURATED_OBJECT,
     )
 
-    # Vérification de la présence du fichier.
     response = s3_client.head_object(
         Bucket=CURATED_BUCKET,
         Key=CURATED_OBJECT,
@@ -260,41 +188,33 @@ def upload_curated_file(
     )
 
 
-# ============================================================
-# MAIN
-# ============================================================
-
-
 def main():
     """Exécute le traitement Raw vers Curated."""
-    logger.info(
-        "Démarrage du traitement Raw -> Curated."
-    )
+    logger.info("Démarrage du traitement Raw -> Curated.")
 
     s3_client = get_s3_client()
 
     try:
-        # 1. Lecture du Parquet brut depuis MinIO.
-        download_raw_file(
-            s3_client
-        )
+        with Timer() as total_timer:
+            download_raw_file(s3_client)
 
-        # 2. Nettoyage avec DuckDB.
-        transform_with_duckdb()
+            with Timer() as timer:
+                transform_with_duckdb()
 
-        # 3. Écriture du résultat dans MinIO Curated.
-        upload_curated_file(
-            s3_client
-        )
+            logger.info(
+                "Transformation DuckDB exécutée en %.4f s.",
+                timer.elapsed,
+            )
+
+            upload_curated_file(s3_client)
 
         logger.info(
-            "Traitement Raw -> Curated terminé avec succès."
+            "Traitement Raw -> Curated terminé avec succès en %.4f s.",
+            total_timer.elapsed,
         )
 
     except Exception:
-        logger.exception(
-            "Erreur pendant le traitement Raw -> Curated."
-        )
+        logger.exception("Erreur pendant le traitement Raw -> Curated.")
         raise
 
 

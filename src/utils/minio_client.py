@@ -13,8 +13,6 @@ def get_s3_client():
         endpoint_url=os.getenv("MINIO_ENDPOINT"),
         aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
         aws_secret_access_key=os.getenv("MINIO_SECRET_KEY"),
-        config=Config(
-            signature_version="s3v4"
-        ),
+        config=Config(signature_version="s3v4"),
         region_name="us-east-1",
     )

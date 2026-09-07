@@ -1,42 +1,50 @@
-"""Lit le Parquet Curated et charge les données dans MongoDB."""
+"""Charge les données Curated dans MongoDB."""
 
-import logging
 import os
 from collections import defaultdict
 
 import duckdb
 from pymongo import MongoClient
 
-from src.utils.minio_client import get_s3_client
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(message)s"
-    ),
+from src.config.settings import (
+    CURATED_BUCKET,
+    CURATED_OBJECT,
+)
+from src.logger import (
+    Timer,
+    get_logger,
+)
+from src.utils.minio_client import (
+    get_s3_client,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-CURATED_BUCKET = "curated"
-CURATED_OBJECT = "tram/tram_stops_clean.parquet"
 CURATED_LOCAL_FILE = "/tmp/tram_stops_clean.parquet"
 
+
 MONGO_HOST = os.getenv("MONGO_HOST")
-MONGO_PORT = int(os.getenv("MONGO_PORT", "27017"))
+
+MONGO_PORT = int(
+    os.getenv(
+        "MONGO_PORT",
+        "27017",
+    )
+)
+
 MONGO_USERNAME = os.getenv("MONGO_USERNAME")
+
 MONGO_PASSWORD = os.getenv("MONGO_PASSWORD")
+
 MONGO_DATABASE = os.getenv("MONGO_DATABASE")
 
 COLLECTION_NAME = "tram_routes"
 
 
-def download_curated_file(s3_client):
+def download_curated_file(
+    s3_client,
+):
     """Télécharge le fichier Curated depuis MinIO."""
     logger.info("Lecture du fichier Curated depuis MinIO.")
 
@@ -53,30 +61,34 @@ def download_curated_file(s3_client):
 
 
 def build_route_documents():
-    """Construit un document MongoDB par route avec ses arrêts."""
-    logger.info(
-        "Construction des documents MongoDB depuis Curated."
-    )
+    """Construit un document MongoDB par route."""
+    logger.info("Construction des documents MongoDB depuis Curated.")
 
     connection = duckdb.connect()
 
     try:
         rows = connection.execute(
             f"""
-            SELECT
-                route_id,
-                route_short_name,
-                stop_id,
-                stop_name,
-                stop_lat,
-                stop_lon
-            FROM read_parquet('{CURATED_LOCAL_FILE}')
-            ORDER BY route_id, stop_id
-            """
+                SELECT
+                    route_id,
+                    route_short_name,
+                    stop_id,
+                    stop_name,
+                    stop_lat,
+                    stop_lon
+                FROM read_parquet(
+                    '{CURATED_LOCAL_FILE}'
+                )
+                ORDER BY
+                    route_id,
+                    stop_id
+                """
         ).fetchall()
 
     finally:
         connection.close()
+
+        logger.info("Connexion DuckDB fermée.")
 
     logger.info(
         "%s lignes Curated lues.",
@@ -100,9 +112,7 @@ def build_route_documents():
             stop_lon,
         ) = row
 
-        routes[route_id]["route_short_name"] = (
-            route_short_name
-        )
+        routes[route_id]["route_short_name"] = route_short_name
 
         routes[route_id]["stops"].append(
             {
@@ -115,14 +125,15 @@ def build_route_documents():
 
     documents = []
 
-    for route_id, route_data in routes.items():
+    for (
+        route_id,
+        route_data,
+    ) in routes.items():
         documents.append(
             {
                 "route_id": route_id,
-                "route_short_name": (
-                    route_data["route_short_name"]
-                ),
-                "stops": route_data["stops"],
+                "route_short_name": (route_data["route_short_name"]),
+                "stops": (route_data["stops"]),
             }
         )
 
@@ -134,8 +145,10 @@ def build_route_documents():
     return documents
 
 
-def load_to_mongodb(documents):
-    """Charge les documents Curated dans MongoDB."""
+def load_to_mongodb(
+    documents,
+):
+    """Insère les documents dans MongoDB."""
     client = MongoClient(
         host=MONGO_HOST,
         port=MONGO_PORT,
@@ -147,11 +160,10 @@ def load_to_mongodb(documents):
     try:
         client.admin.command("ping")
 
-        logger.info(
-            "Connexion MongoDB réussie."
-        )
+        logger.info("Connexion MongoDB réussie.")
 
         database = client[MONGO_DATABASE]
+
         collection = database[COLLECTION_NAME]
 
         deleted = collection.delete_many({})
@@ -162,14 +174,10 @@ def load_to_mongodb(documents):
         )
 
         if not documents:
-            logger.warning(
-                "Aucun document à insérer."
-            )
+            logger.warning("Aucun document à insérer.")
             return
 
-        result = collection.insert_many(
-            documents
-        )
+        result = collection.insert_many(documents)
 
         logger.info(
             "%s documents insérés dans MongoDB.",
@@ -178,7 +186,9 @@ def load_to_mongodb(documents):
 
         document = collection.find_one(
             {},
-            {"_id": 0},
+            {
+                "_id": 0,
+            },
         )
 
         logger.info(
@@ -189,38 +199,42 @@ def load_to_mongodb(documents):
     finally:
         client.close()
 
-        logger.info(
-            "Connexion MongoDB fermée."
-        )
+        logger.info("Connexion MongoDB fermée.")
 
 
 def main():
     """Exécute le chargement Curated vers MongoDB."""
-    logger.info(
-        "Démarrage du chargement Curated -> MongoDB."
-    )
+    logger.info("Démarrage du chargement Curated -> MongoDB.")
 
     s3_client = get_s3_client()
 
     try:
-        download_curated_file(
-            s3_client
-        )
+        with Timer() as total_timer:
+            download_curated_file(s3_client)
 
-        documents = build_route_documents()
+            with Timer() as timer:
+                documents = build_route_documents()
 
-        load_to_mongodb(
-            documents
-        )
+            logger.info(
+                "Construction des documents exécutée en %.4f s.",
+                timer.elapsed,
+            )
+
+            with Timer() as timer:
+                load_to_mongodb(documents)
+
+            logger.info(
+                "Chargement MongoDB exécuté en %.4f s.",
+                timer.elapsed,
+            )
 
         logger.info(
-            "Chargement Curated -> MongoDB terminé avec succès."
+            "Chargement Curated -> MongoDB terminé avec succès en %.4f s.",
+            total_timer.elapsed,
         )
 
     except Exception:
-        logger.exception(
-            "Erreur pendant le chargement Curated -> MongoDB."
-        )
+        logger.exception("Erreur pendant le chargement Curated -> MongoDB.")
         raise
 
 

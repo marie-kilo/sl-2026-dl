@@ -4,3 +4,4 @@ duckdb
 pymongo
 python-dotenv
 pyarrow
+ruff==0.16.6

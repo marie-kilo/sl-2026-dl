@@ -1,68 +1,34 @@
 """Teste MinIO et MongoDB avec les données réelles du fichier Parquet."""
 
-import logging
-import os
 from collections import defaultdict
 
-import boto3
 import duckdb
-from botocore.client import Config
 from pymongo import MongoClient
 
-
-# ============================================================
-# LOGGING
-# ============================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s | "
-        "%(levelname)s | "
-        "%(name)s | "
-        "%(message)s"
-    ),
+from src.logger import (
+    Timer,
+    get_logger,
+)
+from src.utils.minio_client import (
+    get_s3_client,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
-MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
-MINIO_ACCESS_KEY = os.getenv("MINIO_ACCESS_KEY")
-MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY")
-
-MONGO_HOST = os.getenv("MONGO_HOST")
-MONGO_PORT = int(os.getenv("MONGO_PORT", "27017"))
-MONGO_USERNAME = os.getenv("MONGO_USERNAME")
-MONGO_PASSWORD = os.getenv("MONGO_PASSWORD")
-MONGO_DATABASE = os.getenv("MONGO_DATABASE")
-
 BUCKET_NAME = "test-data"
 OBJECT_NAME = "tram_stops.parquet"
 
 LOCAL_FILE = "/app/data/tram_stops.parquet"
+
 DOWNLOADED_FILE = "/tmp/tram_stops_downloaded.parquet"
 
-
-# ============================================================
-# CLIENT MINIO
-# ============================================================
-
-
-def get_s3_client():
-    """Crée le client S3 utilisé pour communiquer avec MinIO."""
-    return boto3.client(
-        "s3",
-        endpoint_url=MINIO_ENDPOINT,
-        aws_access_key_id=MINIO_ACCESS_KEY,
-        aws_secret_access_key=MINIO_SECRET_KEY,
-        config=Config(signature_version="s3v4"),
-        region_name="us-east-1",
-    )
+MONGO_DATABASE = "datalake"
+MONGO_COLLECTION = "tram_routes"
 
 
 # ============================================================
@@ -74,111 +40,112 @@ def test_minio():
     """Écrit puis relit le fichier Parquet dans MinIO."""
     logger.info("Début du test MinIO.")
 
-    s3 = get_s3_client()
+    s3_client = get_s3_client()
+
+    # ========================================================
+    # CRÉATION DU BUCKET
+    # ========================================================
+
+    buckets = [bucket["Name"] for bucket in (s3_client.list_buckets()["Buckets"])]
+
+    if BUCKET_NAME not in buckets:
+        s3_client.create_bucket(Bucket=BUCKET_NAME)
+
+        logger.info(
+            "Bucket créé : %s",
+            BUCKET_NAME,
+        )
+
+    else:
+        logger.info(
+            "Bucket déjà existant : %s",
+            BUCKET_NAME,
+        )
+
+    # ========================================================
+    # ÉCRITURE DANS MINIO
+    # ========================================================
+
+    s3_client.upload_file(
+        LOCAL_FILE,
+        BUCKET_NAME,
+        OBJECT_NAME,
+    )
+
+    logger.info(
+        "Fichier envoyé dans MinIO : %s/%s",
+        BUCKET_NAME,
+        OBJECT_NAME,
+    )
+
+    # ========================================================
+    # VÉRIFICATION DES OBJETS
+    # ========================================================
+
+    response = s3_client.list_objects_v2(Bucket=BUCKET_NAME)
+
+    objects = response.get(
+        "Contents",
+        [],
+    )
+
+    logger.info(
+        "Nombre d'objets dans le bucket : %s",
+        len(objects),
+    )
+
+    for obj in objects:
+        logger.info(
+            "Objet présent : %s",
+            obj["Key"],
+        )
+
+    # ========================================================
+    # RELECTURE DEPUIS MINIO
+    # ========================================================
+
+    s3_client.download_file(
+        BUCKET_NAME,
+        OBJECT_NAME,
+        DOWNLOADED_FILE,
+    )
+
+    logger.info(
+        "Fichier relu depuis MinIO : %s",
+        DOWNLOADED_FILE,
+    )
+
+    # ========================================================
+    # LECTURE AVEC DUCKDB
+    # ========================================================
+
+    connection = duckdb.connect()
 
     try:
-        buckets = [
-            bucket["Name"]
-            for bucket in s3.list_buckets()["Buckets"]
-        ]
-
-        if BUCKET_NAME not in buckets:
-            s3.create_bucket(
-                Bucket=BUCKET_NAME
-            )
-
-            logger.info(
-                "Bucket créé : %s",
-                BUCKET_NAME,
-            )
-
-        else:
-            logger.info(
-                "Bucket déjà existant : %s",
-                BUCKET_NAME,
-            )
-
-        # Envoi du fichier Parquet dans MinIO.
-        s3.upload_file(
-            LOCAL_FILE,
-            BUCKET_NAME,
-            OBJECT_NAME,
-        )
-
-        logger.info(
-            "Fichier envoyé dans MinIO : %s/%s",
-            BUCKET_NAME,
-            OBJECT_NAME,
-        )
-
-        # Vérification des objets présents.
-        response = s3.list_objects_v2(
-            Bucket=BUCKET_NAME
-        )
-
-        objects = response.get(
-            "Contents",
-            [],
-        )
-
-        logger.info(
-            "Nombre d'objets dans le bucket : %s",
-            len(objects),
-        )
-
-        for obj in objects:
-            logger.info(
-                "Objet présent : %s",
-                obj["Key"],
-            )
-
-        # Relecture depuis MinIO.
-        s3.download_file(
-            BUCKET_NAME,
-            OBJECT_NAME,
-            DOWNLOADED_FILE,
-        )
-
-        logger.info(
-            "Fichier relu depuis MinIO : %s",
-            DOWNLOADED_FILE,
-        )
-
-        # Vérification avec DuckDB.
-        connection = duckdb.connect()
-
-        try:
-            rows = connection.execute(
-                """
+        rows = connection.execute(
+            f"""
                 SELECT *
-                FROM read_parquet(?)
+                FROM read_parquet(
+                    '{DOWNLOADED_FILE}'
+                )
                 LIMIT 5
-                """,
-                [DOWNLOADED_FILE],
-            ).fetchall()
+                """
+        ).fetchall()
 
+        logger.info("5 premières lignes du Parquet :")
+
+        for row in rows:
             logger.info(
-                "5 premières lignes du Parquet :"
+                "%s",
+                row,
             )
 
-            for row in rows:
-                logger.info(
-                    "%s",
-                    row,
-                )
+    finally:
+        connection.close()
 
-        finally:
-            connection.close()
+        logger.info("Connexion DuckDB fermée.")
 
-        logger.info(
-            "Test MinIO terminé avec succès."
-        )
-
-    except Exception:
-        logger.exception(
-            "Erreur pendant le test MinIO."
-        )
-        raise
+    logger.info("Test MinIO terminé avec succès.")
 
 
 # ============================================================
@@ -190,34 +157,35 @@ def build_route_documents(
     parquet_file,
 ):
     """Construit un document MongoDB par ligne avec ses arrêts."""
-    logger.info(
-        "Construction des documents MongoDB depuis le Parquet."
-    )
+    logger.info("Construction des documents MongoDB depuis le Parquet.")
 
     connection = duckdb.connect()
 
     try:
         rows = connection.execute(
-            """
-            SELECT DISTINCT
-                route_id,
-                route_short_name,
-                stop_id,
-                stop_name,
-                stop_lat,
-                stop_lon
-            FROM read_parquet(?)
-            WHERE route_id IS NOT NULL
-              AND stop_id IS NOT NULL
-            ORDER BY
-                route_id,
-                stop_id
-            """,
-            [parquet_file],
+            f"""
+                SELECT DISTINCT
+                    route_id,
+                    route_short_name,
+                    stop_id,
+                    stop_name,
+                    stop_lat,
+                    stop_lon
+                FROM read_parquet(
+                    '{parquet_file}'
+                )
+                WHERE route_id IS NOT NULL
+                  AND stop_id IS NOT NULL
+                ORDER BY
+                    route_id,
+                    stop_id
+                """
         ).fetchall()
 
     finally:
         connection.close()
+
+        logger.info("Connexion DuckDB fermée.")
 
     logger.info(
         "%s lignes lues depuis le Parquet.",
@@ -241,13 +209,9 @@ def build_route_documents(
             stop_lon,
         ) = row
 
-        routes[route_id][
-            "route_short_name"
-        ] = route_short_name
+        routes[route_id]["route_short_name"] = route_short_name
 
-        routes[route_id][
-            "stops"
-        ].append(
+        routes[route_id]["stops"].append(
             {
                 "stop_id": stop_id,
                 "stop_name": stop_name,
@@ -258,16 +222,15 @@ def build_route_documents(
 
     documents = []
 
-    for route_id, route_data in routes.items():
+    for (
+        route_id,
+        route_data,
+    ) in routes.items():
         documents.append(
             {
                 "route_id": route_id,
-                "route_short_name": (
-                    route_data[
-                        "route_short_name"
-                    ]
-                ),
-                "stops": route_data["stops"],
+                "route_short_name": (route_data["route_short_name"]),
+                "stops": (route_data["stops"]),
             }
         )
 
@@ -286,60 +249,81 @@ def build_route_documents(
 
 def test_mongodb():
     """Écrit, relit et agrège les données dans MongoDB."""
-    logger.info(
-        "Début du test MongoDB."
+    logger.info("Début du test MongoDB.")
+
+    from os import getenv
+
+    mongo_host = getenv("MONGO_HOST")
+
+    mongo_port = int(
+        getenv(
+            "MONGO_PORT",
+            "27017",
+        )
+    )
+
+    mongo_username = getenv("MONGO_USERNAME")
+
+    mongo_password = getenv("MONGO_PASSWORD")
+
+    mongo_database = getenv(
+        "MONGO_DATABASE",
+        MONGO_DATABASE,
     )
 
     client = MongoClient(
-        host=MONGO_HOST,
-        port=MONGO_PORT,
-        username=MONGO_USERNAME,
-        password=MONGO_PASSWORD,
+        host=mongo_host,
+        port=mongo_port,
+        username=mongo_username,
+        password=mongo_password,
         authSource="admin",
     )
 
     try:
-        client.admin.command(
-            "ping"
-        )
+        # ====================================================
+        # TEST DE CONNEXION
+        # ====================================================
 
-        logger.info(
-            "Connexion MongoDB réussie."
-        )
+        client.admin.command("ping")
 
-        database = client[
-            MONGO_DATABASE
-        ]
+        logger.info("Connexion MongoDB réussie.")
 
-        collection = database[
-            "tram_routes"
-        ]
+        database = client[mongo_database]
 
-        # Nettoyage d'un test précédent.
-        deleted = collection.delete_many(
-            {}
-        )
+        collection = database[MONGO_COLLECTION]
+
+        # ====================================================
+        # NETTOYAGE DU TEST PRÉCÉDENT
+        # ====================================================
+
+        deleted = collection.delete_many({})
 
         logger.info(
             "%s anciens documents supprimés.",
             deleted.deleted_count,
         )
 
-        # Création des documents à partir
-        # du fichier relu depuis MinIO.
-        documents = build_route_documents(
-            DOWNLOADED_FILE
+        # ====================================================
+        # CONSTRUCTION DES DOCUMENTS
+        # ====================================================
+
+        with Timer() as timer:
+            documents = build_route_documents(DOWNLOADED_FILE)
+
+        logger.info(
+            "Construction des documents terminée en %.4f s.",
+            timer.elapsed,
         )
 
         if not documents:
-            logger.warning(
-                "Aucun document à insérer."
-            )
+            logger.warning("Aucun document à insérer.")
             return
 
-        result = collection.insert_many(
-            documents
-        )
+        # ====================================================
+        # INSERTION
+        # ====================================================
+
+        result = collection.insert_many(documents)
 
         logger.info(
             "%s documents insérés dans MongoDB.",
@@ -363,7 +347,7 @@ def test_mongodb():
         )
 
         # ====================================================
-        # AGRÉGATION
+        # AGRÉGATION MONGODB
         # ====================================================
 
         aggregation_pipeline = [
@@ -387,34 +371,20 @@ def test_mongodb():
             },
         ]
 
-        logger.info(
-            "Top 10 des lignes par nombre d'arrêts :"
-        )
+        logger.info("Top 10 des lignes par nombre d'arrêts :")
 
-        for result in collection.aggregate(
-            aggregation_pipeline
-        ):
+        for result in collection.aggregate(aggregation_pipeline):
             logger.info(
                 "%s",
                 result,
             )
 
-        logger.info(
-            "Test MongoDB terminé avec succès."
-        )
-
-    except Exception:
-        logger.exception(
-            "Erreur pendant le test MongoDB."
-        )
-        raise
+        logger.info("Test MongoDB terminé avec succès.")
 
     finally:
         client.close()
 
-        logger.info(
-            "Connexion MongoDB fermée."
-        )
+        logger.info("Connexion MongoDB fermée.")
 
 
 # ============================================================
@@ -424,22 +394,33 @@ def test_mongodb():
 
 def main():
     """Exécute les tests MinIO puis MongoDB."""
-    logger.info(
-        "Démarrage de la Partie 1."
-    )
+    logger.info("Démarrage de la Partie 1.")
 
     try:
-        test_minio()
-        test_mongodb()
+        with Timer() as total_timer:
+            with Timer() as timer:
+                test_minio()
+
+            logger.info(
+                "Test MinIO exécuté en %.4f s.",
+                timer.elapsed,
+            )
+
+            with Timer() as timer:
+                test_mongodb()
+
+            logger.info(
+                "Test MongoDB exécuté en %.4f s.",
+                timer.elapsed,
+            )
 
         logger.info(
-            "Partie 1 terminée avec succès."
+            "Partie 1 terminée avec succès en %.4f s.",
+            total_timer.elapsed,
         )
 
     except Exception:
-        logger.exception(
-            "La Partie 1 a échoué."
-        )
+        logger.exception("La Partie 1 a échoué.")
         raise
 
 

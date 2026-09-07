@@ -1,0 +1,14 @@
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [
+    "demo_brief_minio_mongo.ipynb",
+]
+
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "D", "RUF", "RET", "PLR", "EXE"]
+ignore = ["EXE002"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
