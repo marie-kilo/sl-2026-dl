@@ -14,8 +14,13 @@ def main():
 
     with Timer() as timer:
         ingestion_main()
+        logger.info("Étape ingestion terminée avec succès.")
+
         processing_main()
+        logger.info("Étape processing terminée avec succès.")
+
         loading_main()
+        logger.info("Étape loading terminée avec succès.")
 
     logger.info(
         "Pipeline terminé avec succès en %.4f s.",
