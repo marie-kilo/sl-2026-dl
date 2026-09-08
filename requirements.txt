@@ -1,7 +1,8 @@
-boto3
-botocore
-duckdb
-pymongo
-python-dotenv
-pyarrow
+boto3==1.43.89
+botocore==1.43.89
+duckdb==1.5.5
+pyarrow==25.0.1
+pymongo==4.18.0
+pytest==9.1.1
+python-dotenv==1.2.3
 ruff==0.16.6
