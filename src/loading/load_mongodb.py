@@ -1,45 +1,22 @@
 """Charge les données Curated dans MongoDB."""
 
-import os
 from collections import defaultdict
 
 import duckdb
-from pymongo import MongoClient
 
 from src.config.settings import (
     CURATED_BUCKET,
     CURATED_OBJECT,
+    MONGO_COLLECTION,
+    MONGO_DATABASE,
 )
-from src.logger import (
-    Timer,
-    get_logger,
-)
-from src.utils.minio_client import (
-    get_s3_client,
-)
+from src.logger import Timer, get_logger
+from src.utils.minio_client import get_s3_client
+from src.utils.mongo_client import get_mongo_client
 
 logger = get_logger(__name__)
 
-
 CURATED_LOCAL_FILE = "/tmp/tram_stops_clean.parquet"
-
-
-MONGO_HOST = os.getenv("MONGO_HOST")
-
-MONGO_PORT = int(
-    os.getenv(
-        "MONGO_PORT",
-        "27017",
-    )
-)
-
-MONGO_USERNAME = os.getenv("MONGO_USERNAME")
-
-MONGO_PASSWORD = os.getenv("MONGO_PASSWORD")
-
-MONGO_DATABASE = os.getenv("MONGO_DATABASE")
-
-COLLECTION_NAME = "tram_routes"
 
 
 def download_curated_file(
@@ -145,17 +122,9 @@ def build_route_documents():
     return documents
 
 
-def load_to_mongodb(
-    documents,
-):
+def load_to_mongodb(documents):
     """Insère les documents dans MongoDB."""
-    client = MongoClient(
-        host=MONGO_HOST,
-        port=MONGO_PORT,
-        username=MONGO_USERNAME,
-        password=MONGO_PASSWORD,
-        authSource="admin",
-    )
+    client = get_mongo_client()
 
     try:
         client.admin.command("ping")
@@ -163,8 +132,7 @@ def load_to_mongodb(
         logger.info("Connexion MongoDB réussie.")
 
         database = client[MONGO_DATABASE]
-
-        collection = database[COLLECTION_NAME]
+        collection = database[MONGO_COLLECTION]
 
         deleted = collection.delete_many({})
 
@@ -186,9 +154,7 @@ def load_to_mongodb(
 
         document = collection.find_one(
             {},
-            {
-                "_id": 0,
-            },
+            {"_id": 0},
         )
 
         logger.info(
@@ -198,7 +164,6 @@ def load_to_mongodb(
 
     finally:
         client.close()
-
         logger.info("Connexion MongoDB fermée.")
 
 
